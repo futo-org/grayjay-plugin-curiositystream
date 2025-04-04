@@ -1,0 +1,52 @@
+{
+  "name": "Curiosity Stream (Alpha)",
+  "platformUrl": "https://curiositystream.com",
+  "description": "Curiosity Stream has thousands of documentaries that enlighten, entertain & inspire. What are you curious about?",
+  "author": "FUTO",
+  "authorUrl": "https://futo.org",
+  "sourceUrl": "https://plugins.grayjay.app/CuriosityStream/CuriosityStreamConfig.json",
+  "repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/curiositystream",
+  "scriptUrl": "./CuriosityStreamScript.js",
+  "version": 1,
+  "iconUrl": "./CuriosityStreamIcon.png",
+  "id": "273b6523-5438-44e2-9f5d-78e0325a8fd9",
+  "scriptSignature": "",
+  "scriptPublicKey": "",
+  "packages": [
+    "Http",
+    "DOMParser"
+  ],
+  "allowEval": false,
+  "allowUrls": [
+    "curiositystream.com",
+    ".api.curiositystream.com",
+    "www.curiositystream.com",
+    "cdn-s3-akm.curiositystream.com"
+  ],
+  "supportedClaimTypes": [
+    20
+  ],
+  "settings": [
+    
+  ],
+  "authentication": {
+    "loginUrl": "https://curiositystream.com/login?redirect=%2F",
+    "completionUrl": "https://api.curiositystream.com/v1/user",
+    "domainHeadersToFind": {
+      "api.curiositystream.com": [
+        "x-auth-token"
+      ]
+    },
+    "cookiesToFind": [
+      "auth_token"
+    ],
+    "userAgent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36"
+  },
+  "changelog": {
+    "1": [
+      "Initial release of CuriosityStream plugin",
+      "Support for browsing, searching, and playing documentaries",
+      "Category-based content organization"
+    ]
+  }
+}
