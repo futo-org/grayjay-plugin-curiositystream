@@ -18,16 +18,9 @@
   ],
   "allowEval": false,
   "allowUrls": [
-    "curiositystream.com",
+    ".curiositystream.com",
     ".api.curiositystream.com",
-    "www.curiositystream.com",
-    "cdn-s3-akm.curiositystream.com"
-  ],
-  "supportedClaimTypes": [
-    20
-  ],
-  "settings": [
-    
+    "www.curiositystream.com"
   ],
   "authentication": {
     "loginUrl": "https://curiositystream.com/login?redirect=%2F",
