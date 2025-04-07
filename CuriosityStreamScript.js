@@ -18,8 +18,10 @@ const URLS = {
 // Regular expressions for URL matching
 const REGEX = {
     CONTENT_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/(?:title|video|media|documentary|episode)\/(\d+)\/?/,
-    CHANNEL_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/categories\/([a-zA-Z0-9_-]+)\/?/,
-    COLLECTION_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/series\/(\d+)\/?/
+    CATEGORY_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/categories\/([a-zA-Z0-9_-]+)\/?/,
+    SERIES_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/series\/(\d+)\/?/,
+    // Channel URL can be either a category or a series
+    CHANNEL_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/(?:categories\/([a-zA-Z0-9_-]+)|series\/(\d+))\/?/
 };
 
 // Default HTTP headers
@@ -38,7 +40,8 @@ let config = {};
 let state = {
     buildId: '',
     has_subscription: false,
-    categories: {}
+    categories: {},
+    collections: {} // Cache for collection data
 };
 let settings = {};
 
@@ -57,6 +60,10 @@ source.enable = function(conf, setting, saveStateStr) {
     if (saveStateStr) {
         try {
             state = JSON.parse(saveStateStr);
+            // Ensure collections object exists
+            if (!state.collections) {
+                state.collections = {};
+            }
         } catch (e) {
             log(e);
             bridge.log('Failed to restore state');
@@ -79,7 +86,7 @@ source.saveState = () => {
  * @returns {ContentPager} Paged results for home page
  */
 source.getHome = function() {
-    const result = fetchContentData({
+    const result = fetchContentDataWithCollections({
         url: `${URLS.API_V1}/media?collections=true&limit=${API.VIDEOS_PER_PAGE}`
     });
     
@@ -121,7 +128,23 @@ source.getContentDetails = function(url) {
         throw new ScriptException('Content not found');
     }
     
-    return createVideoDetails(detailsResponse.media);
+    // If the media is part of a collection, fetch collection details
+    const media = detailsResponse.media;
+    let collection = null;
+    
+    if (media.collection_id) {
+        try {
+            collection = fetchCollectionDetails(media.collection_id);
+            // Cache the collection for future use
+            if (collection) {
+                state.collections[media.collection_id] = collection;
+            }
+        } catch (e) {
+            log(`Failed to fetch collection details: ${e.message}`);
+        }
+    }
+    
+    return createVideoDetails(media, collection);
 };
 
 /**
@@ -139,13 +162,22 @@ source.isChannelUrl = function(url) {
  * @returns {PlatformChannel} Channel information
  */
 source.getChannel = function(url) {
-    const match = url.match(REGEX.CHANNEL_URL);
-    if (!match) {
-        throw new ScriptException('Invalid Category URL');
+    // Check if this is a category URL
+    const categoryMatch = url.match(REGEX.CATEGORY_URL);
+    if (categoryMatch) {
+        const categorySlug = categoryMatch[1];
+        return getCategoryChannel(categorySlug, url);
     }
     
-    const categorySlug = match[1];
-    return getCategoryChannel(categorySlug, url);
+    // Check if this is a series URL
+    const seriesMatch = url.match(REGEX.SERIES_URL);
+    if (seriesMatch) {
+        const seriesId = seriesMatch[1];
+        const collection = fetchCollectionDetails(seriesId);
+        return createChannelFromCollection(collection);
+    }
+    
+    throw new ScriptException('Invalid Channel URL');
 };
 
 /**
@@ -154,40 +186,51 @@ source.getChannel = function(url) {
  * @returns {ContentPager} Paged results for channel content
  */
 source.getChannelContents = function(url) {
-    const match = url.match(REGEX.CHANNEL_URL);
-    if (!match) {
-        throw new ScriptException('Invalid Category URL');
+    // Check if this is a category URL
+    const categoryMatch = url.match(REGEX.CATEGORY_URL);
+    if (categoryMatch) {
+        const categorySlug = categoryMatch[1];
+        
+        // Get the category from state to ensure we have correct data
+        const category = Object.values(state.categories)
+            .find(cat => cat.name === categorySlug);
+        
+        const result = fetchContentDataWithCollections({
+            url: `${URLS.API_V1}/media?filterBy=category&term=${categorySlug}&collections=true&limit=${API.VIDEOS_PER_PAGE}&sort=creation_date_desc`,
+            processingInfo: { 
+                categorySlug, 
+                categoryName: formatCategoryName(categorySlug) 
+            }
+        });
+        
+        return new CategoryContentPager(
+            categorySlug,
+            result.items,
+            result.hasMore,
+            { page: 1, category }
+        );
     }
     
-    const categorySlug = match[1];
-    
-    const processCategoryItem = (item) => {
-        const categoryName = formatCategoryName(categorySlug);
+    // Check if this is a series URL
+    const seriesMatch = url.match(REGEX.SERIES_URL);
+    if (seriesMatch) {
+        const seriesId = seriesMatch[1];
+        const collection = fetchCollectionDetails(seriesId);
         
-        if (item.obj_type === 'collection') {
-            const playlist = createPlaylistFromCollection(item);
-            // Override author to ensure it matches the current category
-            playlist.author = createCategoryAuthorLink(categorySlug, categoryName);
-            return playlist;
-        } else {
-            const video = createVideoFromMedia(item);
-            // Override author to ensure it matches the current category
-            video.author = createCategoryAuthorLink(categorySlug, categoryName);
-            return video;
+        if (!collection) {
+            throw new ScriptException('Collection not found');
         }
-    };
+        
+        // For collections, we already have all the videos in the collection object
+        const videos = collection.media
+            .sort((a, b) => a.collection_order - b.collection_order)
+            .map(media => createVideoFromMedia(media, collection));
+        
+        // Return a content pager with all videos (no paging needed for collections)
+        return new ContentPager(videos, false);
+    }
     
-    const result = fetchContentData({
-        url: `${URLS.API_V1}/media?filterBy=category&term=${categorySlug}&collections=true&limit=${API.VIDEOS_PER_PAGE}&sort=creation_date_desc`,
-        processItemFn: processCategoryItem
-    });
-    
-    return new CategoryContentPager(
-        categorySlug,
-        result.items,
-        result.hasMore,
-        { page: 1 }
-    );
+    throw new ScriptException('Invalid Channel URL');
 };
 
 /**
@@ -225,14 +268,88 @@ source.search = function(query, type, order, filters) {
 source.searchChannels = function(query) {
     const channels = [];
     const searchQuery = query.toLowerCase().trim();
+    const addedChannelIds = new Set(); // Track channel IDs to avoid duplicates
     
+    // Search in categories
     Object.values(state.categories)
         .forEach(category => {
             const fullName = category.label.toLowerCase();
             if (fullName.includes(searchQuery)) {
-                channels.push(createChannelFromCategory(category));
+                const channelId = category.name;
+                if (!addedChannelIds.has(channelId)) {
+                    channels.push(createChannelFromCategory(category));
+                    addedChannelIds.add(channelId);
+                }
             }
         });
+    
+    // Search for series/collections that match the query
+    try {
+        const searchBody = {
+            query: searchQuery,
+            hitsPerPage: 20,
+            page: 0,
+            filters: {
+                obj_type: ["collection"] // Only search for collections
+            }
+        };
+        
+        const headers = {
+            "Content-Type": "application/json"
+        };
+        
+        const res = http.POST(`https://api.curiositystream.com/search`, JSON.stringify(searchBody), headers);
+        
+        if (res.isOk) {
+            const body = JSON.parse(res.body);
+            const seriesHits = body.hits || [];
+            
+            // Process each series and add to channels
+            seriesHits.forEach(hit => {
+                // Always use collection_id as the series identifier
+                const collectionId = hit.collection_id;
+                
+                // Skip entries without a collection_id
+                if (!collectionId) {
+                    return;
+                }
+                
+                const seriesChannelId = `series_${collectionId}`;
+                
+                // Skip if we've already added this channel
+                if (addedChannelIds.has(seriesChannelId)) {
+                    return;
+                }
+                
+                // Check if we have complete collection data in cache
+                let collection = null;
+                
+                // Try to get from cache first using the correct ID
+                if (collectionId && state.collections[collectionId]) {
+                    collection = state.collections[collectionId];
+                } 
+                
+                // If not in cache, create minimal collection object from search result
+                if (!collection) {
+                    collection = {
+                        id: collectionId,
+                        title: hit.title,
+                        description: hit.description || hit.short_description || "",
+                        image_large: hit.image_large,
+                        image_medium: hit.image_medium,
+                        media_count: hit.media_count || 0
+                    };
+                }
+                
+                channels.push(createChannelFromCollection(collection));
+                addedChannelIds.add(seriesChannelId);
+                
+                // We're only using collection_id, so no need to track alternative IDs
+            });
+        }
+    } catch (error) {
+        log(`Error searching for series channels: ${error.message}`);
+    }
     
     return new ContentPager(channels, false);
 };
@@ -243,7 +360,7 @@ source.searchChannels = function(query) {
  * @returns {boolean} True if URL points to a playlist
  */
 source.isPlaylistUrl = function(url) {
-    return REGEX.COLLECTION_URL.test(url);
+    return REGEX.SERIES_URL.test(url);
 };
 
 /**
@@ -252,7 +369,7 @@ source.isPlaylistUrl = function(url) {
  * @returns {PlatformPlaylistDetails} Playlist details
  */
 source.getPlaylist = function(url) {
-    const match = url.match(REGEX.COLLECTION_URL);
+    const match = url.match(REGEX.SERIES_URL);
     if (!match) {
         throw new ScriptException('Invalid Collection URL');
     }
@@ -277,6 +394,9 @@ source.getComments = function(url) {
  * Loads initial state data, including categories and subscription status
  */
 function loadInitialState() {
+    // Initialize collections cache
+    state.collections = {};
+    
     // Check subscription status if logged in
     if (bridge.isLoggedIn()) {
         const res = http.GET(`${URLS.API_V1}/user`, DEFAULT_HEADERS, true);
@@ -353,9 +473,10 @@ function fetchMediaDetails(contentId, isLoggedIn) {
 /**
  * Creates a video details object from media data
  * @param {Object} media - Media data from API
+ * @param {Object} collection - Collection data if media is part of a collection
  * @returns {PlatformVideoDetails} Video details
  */
-function createVideoDetails(media) {
+function createVideoDetails(media, collection) {
     // Prepare video sources
     const sources = createVideoSources(media);
     
@@ -365,17 +486,24 @@ function createVideoDetails(media) {
     
     // Format title and description
     let name = formatMediaTitle(media);
-    let description = formatMediaDescription(media, is_preview);
+    let description = formatMediaDescription(media, is_preview, collection);
     
     // Handle preview content
     if (is_preview) {
-        name += ' (free preview)';
+        name += ' (preview)';
         duration = 300; // Preview videos are limited to 5 minutes (300 seconds)
     }
     
-    // Get author information from category
-    const category = getCategoryByLabel(media.primary_category);
-    const author = category ? createChannelLinkFromCategory(category) : createDefaultChannelLink();
+    // Determine the appropriate author
+    let author;
+    if (collection) {
+        // Use collection as the author for videos part of a series
+        author = createAuthorLinkFromCollection(collection);
+    } else {
+        // Use category as the author for standalone videos
+        const category = getCategoryByLabel(media.primary_category);
+        author = category ? createChannelLinkFromCategory(category) : createDefaultChannelLink();
+    }
     
     const videoDetails = new PlatformVideoDetails({
         id: new PlatformID(PLATFORM, media.id.toString(), config.id),
@@ -469,17 +597,14 @@ function createPlaylistDetails(collection) {
     
     // Get media (videos) in the collection
     const videos = collection.media
-    .sort((a, b) => a.collection_order - b.collection_order)
-    .map(media => createVideoFromMedia(media));
+        .sort((a, b) => a.collection_order - b.collection_order)
+        .map(media => createVideoFromMedia(media, collection));
+    
     // Create PlatformPlaylistDetails
     return new PlatformPlaylistDetails({
         id: new PlatformID(PLATFORM, collection.id.toString(), config.id),
         name: collection.title,
-        author: new PlatformAuthorLink(
-            new PlatformID(PLATFORM, 'CuriosityStream', config.id),
-            'CuriosityStream',
-            URLS.BASE
-        ),
+        author: createAuthorLinkFromCollection(collection),
         description: collection.description || '',
         thumbnail: collection.image_large || collection.image_medium || '',
         url: constructCollectionUrl(collection),
@@ -494,13 +619,84 @@ function createPlaylistDetails(collection) {
  * @returns {Object} Collection data
  */
 function fetchCollectionDetails(seriesId) {
+    // Check if collection is already in state cache
+    if (state.collections[seriesId]) {
+        return state.collections[seriesId];
+    }
+    
     const res = http.GET(`${URLS.API_V2}/series/${seriesId}`, DEFAULT_HEADERS);
     
     if (!res.isOk) {
         throw new ScriptException('Failed to fetch collection');
     }
     
-    return JSON.parse(res.body).data;
+    const collection = JSON.parse(res.body).data;
+    
+    // Cache the collection
+    if (collection) {
+        state.collections[seriesId] = collection;
+    }
+    
+    return collection;
+}
+
+/**
+ * Fetches collection details in batch
+ * @param {Array} collectionIds - Array of collection IDs
+ * @returns {Object} Map of collection ID to collection data
+ */
+function fetchCollectionDetailsBatch(collectionIds) {
+    if (!collectionIds || collectionIds.length === 0) {
+        return {};
+    }
+    
+    // Filter out collection IDs that are already cached
+    const uncachedIds = collectionIds.filter(id => !state.collections[id]);
+    
+    // If all collections are cached, return the cache
+    if (uncachedIds.length === 0) {
+        return collectionIds.reduce((result, id) => {
+            result[id] = state.collections[id];
+            return result;
+        }, {});
+    }
+    
+    // Create batch request for uncached collections
+    const batch = http.batch();
+    uncachedIds.forEach(id => {
+        batch.GET(`${URLS.API_V2}/series/${id}`, DEFAULT_HEADERS);
+    });
+    
+    const responses = batch.execute();
+    
+    // Process the responses
+    const collections = {};
+    for (let i = 0; i < uncachedIds.length; i++) {
+        const id = uncachedIds[i];
+        const response = responses[i];
+        
+        if (response && response.isOk) {
+            try {
+                const collection = JSON.parse(response.body).data;
+                if (collection) {
+                    collections[id] = collection;
+                    // Cache the collection
+                    state.collections[id] = collection;
+                }
+            } catch (e) {
+                log(`Error parsing collection ${id}: ${e.message}`);
+            }
+        }
+    }
+    
+    // Add cached collections
+    collectionIds.forEach(id => {
+        if (state.collections[id] && !collections[id]) {
+            collections[id] = state.collections[id];
+        }
+    });
+    
+    return collections;
 }
 
 /**
@@ -509,7 +705,7 @@ function fetchCollectionDetails(seriesId) {
  * @returns {ContentPager} Paged results with recommendations
  */
 function getRecommendations(videoId) {
-    const result = fetchContentData({
+    const result = fetchContentDataWithCollections({
         url: `${URLS.API_V1}/media?filterBy=recommended&term=${videoId}&limit=${API.VIDEOS_PER_PAGE}&collections=true`
     });
     
@@ -540,6 +736,23 @@ function createChannelFromCategory(category) {
 }
 
 /**
+ * Creates a channel from collection data
+ * @param {Object} collection - Collection data
+ * @returns {PlatformChannel} Channel object
+ */
+function createChannelFromCollection(collection) {
+    return new PlatformChannel({
+        id: new PlatformID(PLATFORM, `series_${collection.id}`, config.id),
+        name: collection.title,
+        thumbnail: collection.image_large || collection.image_medium || '',
+        banner: collection.background_url || '',
+        subscribers: 0,
+        description: collection.description || `Documentary series "${collection.title}"`,
+        url: constructCollectionUrl(collection)
+    });
+}
+
+/**
  * Creates an author link from category data
  * @param {Object} category - Category data
  * @returns {PlatformAuthorLink} Author link
@@ -554,13 +767,40 @@ function createChannelLinkFromCategory(category) {
 }
 
 /**
+ * Creates an author link from collection data
+ * @param {Object} collection - Collection data
+ * @returns {PlatformAuthorLink} Author link
+ */
+function createAuthorLinkFromCollection(collection) {
+    return new PlatformAuthorLink(
+        new PlatformID(PLATFORM, `series_${collection.id}`, config.id),
+        collection.title,
+        constructCollectionUrl(collection),
+        collection.image_large || collection.image_medium || ''
+    );
+}
+
+/**
  * Creates a video object from media data
  * @param {Object} media - Media data
+ * @param {Object} collection - Collection data if media is part of a collection
  * @returns {PlatformVideo} Video object
  */
-function createVideoFromMedia(media) {
-    // Use primary category as the creator/channel
-    const creatorId = media.primary_category || 'CuriosityStream';
+function createVideoFromMedia(media, collection) {
+    // Check if media is part of a collection
+    const hasCollection = !!collection;
+    
+    // Use collection/series as author if available, otherwise use category
+    let author;
+    if (hasCollection) {
+        author = createAuthorLinkFromCollection(collection);
+    } else {
+        const creatorId = media.primary_category || 'CuriosityStream';
+        const category = getCategoryByLabel(creatorId);
+        author = createChannelLinkFromCategory(category);
+    }
+    
+    // Check for preview content
     const is_preview = isMediaPreview(media) && !state.has_subscription;
     
     // Format title and duration
@@ -568,13 +808,9 @@ function createVideoFromMedia(media) {
     let duration = media.duration || 0;
     
     if (is_preview) {
-        name += ' (free preview)';
+        name += ' (preview)';
         duration = 300; // Preview videos are limited to 5 minutes (300 seconds)
     }
-    
-    // Get category and author information
-    const category = getCategoryByLabel(creatorId);
-    const author = createChannelLinkFromCategory(category);
     
     return new PlatformVideo({
         id: new PlatformID(PLATFORM, media.id.toString(), config.id),
@@ -601,7 +837,7 @@ function createPlaylistFromCollection(collection) {
         name: collection.title,
         url: constructCollectionUrl(collection),
         thumbnail: collection.image_large || collection.image_medium || '',
-        author: createDefaultChannelLink(),
+        author: createAuthorLinkFromCollection(collection),
         videoCount: collection.media_count || 0
     });
 }
@@ -657,13 +893,16 @@ function formatMediaTitle(media) {
  * Formats media description
  * @param {Object} media - Media data
  * @param {boolean} is_preview - Whether the media is preview only
+ * @param {Object} collection - Collection data if available
  * @returns {string} Formatted description
  */
-function formatMediaDescription(media, is_preview) {
+function formatMediaDescription(media, is_preview, collection) {
     let description = media.description || media.short_description || '';
     
     if (media.collection_id) {
-        description += `<p><a href="${URLS.BASE}/series/${media.collection_id}">Open complete playlist</a></p>`;
+        const collectionInfo = collection || state.collections[media.collection_id];
+        const collectionTitle = collectionInfo ? collectionInfo.title : "series";
+        description += `<p><a href="${URLS.BASE}/series/${media.collection_id}">View complete "${collectionTitle}" series</a></p>`;
     }
     
     if (is_preview) {
@@ -762,28 +1001,60 @@ function createCategoryAuthorLink(categorySlug, categoryName) {
 }
 
 /**
+ * Extract unique collection IDs from a list of videos
+ * @param {Array} videos - Array of video items
+ * @returns {Array} Array of unique collection IDs
+ */
+function extractCollectionIds(videos) {
+    if (!videos || !Array.isArray(videos)) {
+        return [];
+    }
+    
+    // Filter out videos with collection_id and get unique IDs
+    return [...new Set(
+        videos
+            .filter(video => video && video.collection_id)
+            .map(video => video.collection_id)
+    )];
+}
+
+/**
  * Maps content items to the appropriate platform object type
  * @param {Object} item - Content item
+ * @param {Object} collectionsMap - Map of collection ID to collection data
+ * @param {Object} processingInfo - Additional processing information
  * @returns {PlatformVideo|PlatformPlaylist} Mapped content
  */
-function mapContent(item) {
-    return item.obj_type === 'collection'
-        ? createPlaylistFromCollection(item)
-        : createVideoFromMedia(item);
+function mapContent(item, collectionsMap = {}, processingInfo = {}) {
+    if (item.obj_type === 'collection') {
+        return createPlaylistFromCollection(item);
+    } else {
+        // For media items, check if it's part of a collection
+        const collection = item.collection_id ? collectionsMap[item.collection_id] : null;
+        
+        // If part of a category page and not overridden by collection, use category as author
+        if (!collection && processingInfo.categorySlug) {
+            const video = createVideoFromMedia(item);
+            video.author = createCategoryAuthorLink(processingInfo.categorySlug, processingInfo.categoryName);
+            return video;
+        }
+        
+        return createVideoFromMedia(item, collection);
+    }
 }
 
 // ====================== DATA FETCHING ======================
 
 /**
- * Fetches and processes content data
+ * Fetches and processes content data with collection information
  * @param {Object} params - Request parameters
  * @returns {Object} Processed data
  */
-function fetchContentData(params) {
+function fetchContentDataWithCollections(params) {
     const { 
         url, 
         page = 1,
-        processItemFn = mapContent
+        processingInfo = {}
     } = params;
     
     const fullUrl = `${url}&page=${page}`;
@@ -808,7 +1079,12 @@ function fetchContentData(params) {
             };
         }
         
-        let items = body.data.map(item => processItemFn(item));
+        // Extract collection IDs and fetch collection details
+        const collectionIds = extractCollectionIds(body.data);
+        const collectionMap = fetchCollectionDetailsBatch(collectionIds);
+        
+        // Map items with collection data
+        let items = body.data.map(item => mapContent(item, collectionMap, processingInfo));
         
         return {
             items,
@@ -860,7 +1136,7 @@ function fetchSearchData(query, page = 1) {
         const body = JSON.parse(res.body);
         
         // Process search results from the hits array
-        const items = (body.hits || []).map(item => {
+        const hits = (body.hits || []).map(item => {
             // Create a standardized item that works with our mapContent function
             return {
                 id: item.id || item.title_id,
@@ -876,9 +1152,17 @@ function fetchSearchData(query, page = 1) {
                 primary_category: item.primary_category,
                 obj_type: item.obj_type || "media",
                 media_count: item.episodes_count,
-                status: item.status // Ensure status field is passed along for preview detection
+                status: item.status, // Ensure status field is passed along for preview detection
+                collection_id: item.collection_id // Include collection ID if present
             };
-        }).map(e => mapContent(e));
+        });
+        
+        // Extract collection IDs and fetch collection details
+        const collectionIds = extractCollectionIds(hits);
+        const collectionMap = fetchCollectionDetailsBatch(collectionIds);
+        
+        // Map items with collection data
+        const items = hits.map(item => mapContent(item, collectionMap));
         
         return {
             items,
@@ -907,7 +1191,7 @@ class CuriosityStreamHomePager extends VideoPager {
     }
     
     nextPage() {
-        const result = fetchContentData({
+        const result = fetchContentDataWithCollections({
             url: `${URLS.API_V1}/media?collections=true&limit=${API.VIDEOS_PER_PAGE}`,
             page: this.context.page + 1
         });
@@ -930,23 +1214,13 @@ class CategoryContentPager extends VideoPager {
     nextPage() {
         const categorySlug = this.context.categorySlug;
         
-        const processCategoryItem = (item) => {
-            const categoryName = formatCategoryName(categorySlug);
-            if (item.obj_type === 'collection') {
-                const playlist = createPlaylistFromCollection(item);
-                playlist.author = createCategoryAuthorLink(categorySlug, categoryName);
-                return playlist;
-            } else {
-                const video = createVideoFromMedia(item);
-                video.author = createCategoryAuthorLink(categorySlug, categoryName);
-                return video;
-            }
-        };
-        
-        const result = fetchContentData({
+        const result = fetchContentDataWithCollections({
             url: `${URLS.API_V1}/media?filterBy=category&term=${categorySlug}&collections=true&limit=${API.VIDEOS_PER_PAGE}&sort=creation_date_desc`,
             page: this.context.page + 1,
-            processItemFn: processCategoryItem
+            processingInfo: {
+                categorySlug,
+                categoryName: formatCategoryName(categorySlug)
+            }
         });
         
         this.results = result.items;
@@ -983,7 +1257,7 @@ class RecommendationsPager extends VideoPager {
     }
     
     nextPage() {
-        const result = fetchContentData({
+        const result = fetchContentDataWithCollections({
             url: `${URLS.API_V1}/media?filterBy=recommended&term=${this.context.videoId}&limit=${API.VIDEOS_PER_PAGE}&collections=true`,
             page: this.context.page + 1
         });
