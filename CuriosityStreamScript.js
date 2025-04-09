@@ -21,7 +21,9 @@ const REGEX = {
     CATEGORY_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/categories\/([a-zA-Z0-9_-]+)\/?/,
     SERIES_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/series\/(\d+)\/?/,
     // Channel URL can be either a category or a series
-    CHANNEL_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/(?:categories\/([a-zA-Z0-9_-]+)|series\/(\d+))\/?/
+    CHANNEL_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/(?:categories\/([a-zA-Z0-9_-]+)|series\/(\d+))\/?/,
+    IS_HLS: /\.m3u8($|\?)|[?&].*m3u8/i,
+    IS_DASH: /\.mpd($|\?)|[?&].*mpd/i
 };
 
 // Default HTTP headers
@@ -455,18 +457,24 @@ function processCategories(categories) {
  */
 function fetchMediaDetails(contentId, isLoggedIn) {
     const batch = http.batch();
+
+    batch.GET(`${URLS.API_V1}/media/${contentId}?encodingsNew=true&encodingsFormat=m3u8`, DEFAULT_HEADERS, isLoggedIn);
     batch.GET(`${URLS.API_V1}/media/${contentId}?encodingsNew=true&encodingsFormat=mpd`, DEFAULT_HEADERS, isLoggedIn);
-    const [streamingDetailsResponse] = batch.execute();
     
-    if (!streamingDetailsResponse.isOk) {
+    const [hlsResponse, dashResponse] = batch.execute();
+    
+    if (!hlsResponse.isOk && !dashResponse.isOk) {
         throw new ScriptException('Failed to fetch content details');
     }
     
-    const mainDetails = JSON.parse(streamingDetailsResponse.body);
+    // Prefer HLS if available, since dash is not supported on desktop yet
+    const mainDetails = hlsResponse.isOk ? 
+        JSON.parse(hlsResponse.body) : 
+        JSON.parse(dashResponse.body);
     
+    // Save both for later source creation
     return {
-        media: mainDetails.data,
-        response: streamingDetailsResponse
+        media: mainDetails.data
     };
 }
 
@@ -537,23 +545,32 @@ function createVideoDetails(media, collection) {
 function createVideoSources(media) {
     const sources = [];
     
-    // Handle preview videos by using the original duration or limiting to 5 minutes
-    let duration = media.duration || 0;
-    if (isMediaPreview(media) && !state.has_subscription) {
-        duration = 300; // Preview videos limited to 5 minutes
-    }
+    // Set duration, limiting to 5 minutes for preview videos without subscription
+    const duration = (isMediaPreview(media) && !state.has_subscription) ? 300 : (media.duration || 0);
     
-    // Check if there are any encodings available
-    if (media.encodings && media.encodings.length > 0) {
-        const encoding = media.encodings[0];
-        // Add Dash source if available
-        if (encoding.master_playlist_url) {
-            sources.push(new DashSource({
-                name: encoding.type || 'Dash',
-                url: encoding.master_playlist_url,
-                duration: duration,
-                priority: true
-            }));
+    if (media.encodings?.length) {
+        
+        for (const encoding of media.encodings) {
+            const url = encoding.master_playlist_url;
+
+            if (!url) continue;
+            
+            if (REGEX.IS_HLS.test(url)) {
+                sources.push(new HLSSource({
+                    name: "HLS",
+                    url,
+                    duration,
+                    priority: true
+                }));
+            } else if (REGEX.IS_DASH.test(url)) {
+                sources.push(new DashSource({
+                    name: "DASH",
+                    url,
+                    duration
+                }));
+            } else {
+                log(`Unknown streaming format for URL: ${url}`);
+            }
         }
     }
     
