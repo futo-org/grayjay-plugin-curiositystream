@@ -8,33 +8,75 @@
 // ---------------------- Constants ----------------------
 
 const PLATFORM = 'CuriosityStream';
-const URLS = {
-    BASE: 'https://www.curiositystream.com',
+
+// Base URLs
+const BASE_URLS = {
+    MAIN: 'https://curiositystream.com',
     API_V1: 'https://api.curiositystream.com/v1',
     API_V2: 'https://api.curiositystream.com/v2',
-    MISSING_IMG: 'https://cdn.curiositystream.com/missing.png'
+    CDN: 'https://cdn.curiositystream.com'
 };
 
 // Regular expressions for URL matching
 const REGEX = {
-    CONTENT_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/(?:title|video|media|documentary|episode)\/(\d+)\/?/,
-    CATEGORY_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/categories\/([a-zA-Z0-9_-]+)\/?/,
-    SERIES_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/series\/(\d+)\/?/,
-    // Channel URL can be either a category or a series
-    CHANNEL_URL: /^https:\/\/(?:www\.)?curiositystream\.com\/(?:categories\/([a-zA-Z0-9_-]+)|series\/(\d+))\/?/,
+    CONTENT_URL: new RegExp(`^${BASE_URLS.MAIN}/(?:title|video|media|documentary|episode)/(\\d+)/?`),
+    CATEGORY_URL: new RegExp(`^${BASE_URLS.MAIN}/categories/([a-zA-Z0-9_-]+)/?`),
+    SERIES_URL: new RegExp(`^${BASE_URLS.MAIN}/series/(\\d+)/?`),
+    CHANNEL_URL: new RegExp(`^${BASE_URLS.MAIN}/(?:categories/([a-zA-Z0-9_-]+)|series/(\\d+))/?`),
+    // Video format detection
     IS_HLS: /\.m3u8($|\?)|[?&].*m3u8/i,
-    IS_DASH: /\.mpd($|\?)|[?&].*mpd/i
+    IS_DASH: /\.mpd($|\?)|[?&].*mpd/i,
+
+    // Script extraction patterns
+    SCRIPT_URL: /src=["'](\/_next\/static\/chunks\/pages\/free-[^"']*?)["']/i,
+    FREE_VIDEOS_DATA: /t\.Z\s*=\s*(\[.*?\])/s,
+};
+
+// API settings
+const API = {
+    VIDEOS_PER_PAGE: 10
+};
+
+// Content types
+const CONTENT_TYPES = {
+    MEDIA: 'media',
+    SERIES: 'series',
+    COLLECTION: 'collection',
+    CATEGORY: 'category'
+};
+
+// Then define URLS using BASE_URLS
+const URLS = {
+    // Base URLs
+    BASE: BASE_URLS.MAIN,
+    API_V1: BASE_URLS.API_V1,
+    API_V2: BASE_URLS.API_V2,
+    CDN: BASE_URLS.CDN,
+    // Static resources
+    MISSING_IMG: `${BASE_URLS.CDN}/missing.png`,
+
+    // API endpoints
+    MEDIA: (id) => `${BASE_URLS.API_V1}/media/${id}`,
+    MEDIA_HLS: (id) => `${BASE_URLS.API_V1}/media/${id}?encodingsNew=true&encodingsFormat=m3u8`,
+    MEDIA_DASH: (id) => `${BASE_URLS.API_V1}/media/${id}?encodingsNew=true&encodingsFormat=mpd`,
+    COLLECTION: (id) => `${BASE_URLS.API_V1}/series/${id}`,
+    SEARCH: `${BASE_URLS.API_V2}/search`,
+    FREE_PAGE: `${BASE_URLS.MAIN}/free`,
+
+    // Content URLs
+    MEDIA_PAGE: (id) => `${BASE_URLS.MAIN}/${CONTENT_TYPES.MEDIA}/${id}`,
+    SERIES_PAGE: (id) => `${BASE_URLS.MAIN}/${CONTENT_TYPES.SERIES}/${id}`,
+    CATEGORY_PAGE: (slug) => `${BASE_URLS.MAIN}/categories/${slug}`,
+
+    // API query endpoints
+    MEDIA_QUERY: `${BASE_URLS.API_V1}/media`,
+    COLLECTIONS_QUERY: `${BASE_URLS.API_V1}/collections`
 };
 
 // Default HTTP headers
 const DEFAULT_HEADERS = {
     'content-type': 'application/json',
     'user-agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36'
-};
-
-// API settings
-const API = {
-    VIDEOS_PER_PAGE: 10
 };
 
 // Plugin state
@@ -87,15 +129,22 @@ source.saveState = () => {
  * Get home page content
  * @returns {ContentPager} Paged results for home page
  */
-source.getHome = function() {
+source.getHome = function () {
+    // Fetch regular content
     const result = fetchContentDataWithCollections({
         url: `${URLS.API_V1}/media?collections=true&limit=${API.VIDEOS_PER_PAGE}`
     });
-    
+
+    // Get combined content (with free videos first for non-subscribers)
+    const combinedResults = getCombinedContent(
+        result.items || [],
+        state.has_subscription
+    );
+
     return new CuriosityStreamHomePager(
-        result.items,
+        combinedResults,
         result.hasMore,
-        { page: 1 }
+        { page: 1, hasShownFreeVideos: true }
     );
 };
 
@@ -104,7 +153,7 @@ source.getHome = function() {
  * @param {string} url - URL to check
  * @returns {boolean} True if URL points to content
  */
-source.isContentDetailsUrl = function(url) {
+source.isContentDetailsUrl = function (url) {
     return REGEX.CONTENT_URL.test(url);
 };
 
@@ -113,20 +162,25 @@ source.isContentDetailsUrl = function(url) {
  * @param {string} url - Content URL
  * @returns {PlatformVideoDetails} Video details
  */
-source.getContentDetails = function(url) {
-    // Extract content ID from the URL
-    const match = url.match(REGEX.CONTENT_URL);
-    if (!match) {
+source.getContentDetails = function (url) {
+
+    const contentId = getContentIdFromUrl(url);
+    if (!contentId) {
         throw new ScriptException('Invalid Curiosity Stream URL');
     }
-    
-    const contentId = match[1];
-    
-    // Fetch media details
+
+    if (url.includes('free=true')) {
+        const freeVideo = findFreeVideoById(contentId);
+        if (freeVideo) {
+            return createVideoDetailsFromFreeVideo(freeVideo);
+        }
+    }
+
+    // Get regular content details
     const isLoggedIn = bridge.isLoggedIn();
-    const detailsResponse = fetchMediaDetails(contentId, isLoggedIn);
-    
-    if (!detailsResponse.media) {
+    const details = fetchMediaDetails(contentId, isLoggedIn);
+
+    if (!details.media) {
         throw new ScriptException('Content not found');
     }
     
@@ -299,9 +353,9 @@ source.searchChannels = function(query) {
         const headers = {
             "Content-Type": "application/json"
         };
-        
-        const res = http.POST(`https://api.curiositystream.com/search`, JSON.stringify(searchBody), headers);
-        
+
+        const res = http.POST(URLS.SEARCH, JSON.stringify(searchBody), headers);
+
         if (res.isOk) {
             const body = JSON.parse(res.body);
             const seriesHits = body.hits || [];
@@ -345,8 +399,6 @@ source.searchChannels = function(query) {
                 
                 channels.push(createChannelFromCollection(collection));
                 addedChannelIds.add(seriesChannelId);
-                
-                // We're only using collection_id, so no need to track alternative IDs
             });
         }
     } catch (error) {
@@ -457,12 +509,11 @@ function processCategories(categories) {
  */
 function fetchMediaDetails(contentId, isLoggedIn) {
     const batch = http.batch();
+    batch.GET(URLS.MEDIA_HLS(contentId), DEFAULT_HEADERS, isLoggedIn);
+    batch.GET(URLS.MEDIA_DASH(contentId), DEFAULT_HEADERS, isLoggedIn);
 
-    batch.GET(`${URLS.API_V1}/media/${contentId}?encodingsNew=true&encodingsFormat=m3u8`, DEFAULT_HEADERS, isLoggedIn);
-    batch.GET(`${URLS.API_V1}/media/${contentId}?encodingsNew=true&encodingsFormat=mpd`, DEFAULT_HEADERS, isLoggedIn);
-    
     const [hlsResponse, dashResponse] = batch.execute();
-    
+
     if (!hlsResponse.isOk && !dashResponse.isOk) {
         throw new ScriptException('Failed to fetch content details');
     }
@@ -472,7 +523,6 @@ function fetchMediaDetails(contentId, isLoggedIn) {
         JSON.parse(hlsResponse.body) : 
         JSON.parse(dashResponse.body);
     
-    // Save both for later source creation
     return {
         media: mainDetails.data
     };
@@ -578,6 +628,190 @@ function createVideoSources(media) {
 }
 
 /**
+ * Parse duration string to seconds
+ * @param {string} durationStr - Duration string (e.g., "50m", "1h 30m")
+ * @returns {number} Duration in seconds
+ */
+function parseDuration(durationStr) {
+    if (!durationStr) return 0;
+
+    // Regular expressions to extract hours, minutes and seconds
+    const hoursMatch = durationStr.match(/(\d+)h/);
+    const minutesMatch = durationStr.match(/(\d+)m/);
+    const secondsMatch = durationStr.match(/(\d+)s/);
+
+    let hours = hoursMatch ? parseInt(hoursMatch[1]) : 0;
+    let minutes = minutesMatch ? parseInt(minutesMatch[1]) : 0;
+    let seconds = secondsMatch ? parseInt(secondsMatch[1]) : 0;
+
+    return (hours * 3600) + (minutes * 60) + seconds;
+}
+
+/**
+ * Gets free videos from the Curiosity Stream free page
+ * @returns {Array} Array of free video objects
+ */
+function getFreeVideos() {
+    try {
+        const scriptUrl = getFreePageScriptUrl();
+        if (!scriptUrl) return [];
+        const freeVideos = extractFreeVideosFromScript(scriptUrl);
+        log(`Loaded ${freeVideos.length} free videos`);
+        return freeVideos;
+    } catch (error) {
+        log(`Error fetching free videos: ${error.message}`);
+        return [];
+    }
+}
+
+/**
+ * Gets the script URL containing free videos data
+ * @returns {string|null} Script URL if found
+ */
+function getFreePageScriptUrl() {
+    const res = http.GET(URLS.FREE_PAGE, DEFAULT_HEADERS);
+    if (!res.isOk) {
+        log("Failed to fetch free page");
+        return null;
+    }
+    return extractScriptUrl(res.body);
+}
+
+/**
+ * Extracts free videos data from script content
+ * @param {string} scriptUrl - URL of the script file
+ * @returns {Array} Array of free video objects
+ */
+function extractFreeVideosFromScript(scriptUrl) {
+    const scriptRes = http.GET(`${BASE_URLS.MAIN}${scriptUrl}`, DEFAULT_HEADERS);
+    if (!scriptRes.isOk) return [];
+    const match = scriptRes.body.match(REGEX.FREE_VIDEOS_DATA);
+    if (!match?.[1]) return [];
+    const freeVideos = parseJsObject(match[1]);
+    return Array.isArray(freeVideos) ? freeVideos : [];
+}
+
+/**
+ * Finds a free video by its media ID
+ * @param {string} mediaId - Media ID to search for
+ * @returns {Object|undefined} Free video object if found
+ */
+function findFreeVideoById(mediaId) {
+    const freeVideos = getFreeVideos();
+    return freeVideos.find(video => video.media.toString() === mediaId);
+}
+
+/**
+ * Creates a video object from a free video
+ * @param {Object} freeVideo - Free video data
+ * @returns {PlatformVideo} Video object
+ */
+function createVideoFromFreeVideo(freeVideo) {
+    // Extract information from the free video object
+    const {
+        media,
+        title,
+        subtitle,
+        thumbnail,
+        rating_percentage,
+        year_produced,
+        category,
+        duration
+    } = freeVideo;
+
+    // Parse the duration string (e.g., "50m" to seconds)
+    const durationSeconds = parseDuration(duration);
+
+    // Create a category-based author
+    const categoryObj = getCategoryByLabel(category);
+    const author = categoryObj
+        ? createChannelLinkFromCategory(categoryObj)
+        : createCategoryAuthorLink(category.toLowerCase(), category);
+
+    return new PlatformVideo({
+        id: new PlatformID(PLATFORM, media.toString(), config.id),
+        name: subtitle ? `${title}: ${subtitle}` : title,
+        author,
+        thumbnails: new Thumbnails([new Thumbnail(thumbnail, 0)]),
+        duration: durationSeconds,
+        viewCount: -1, // We don't have view count for free videos
+        // datetime: year_produced ? new Date(`${year_produced}-01-01`).getTime() / 1000 : 0,
+        url: `${URLS.BASE}/video/${media}?free=true`,
+        isLive: false,
+        description: subtitle || title
+    });
+}
+
+/**
+ * Creates a video details object from a free video
+ * @param {Object} freeVideo - Free video data
+ * @returns {PlatformVideoDetails} Video details
+ */
+function createVideoDetailsFromFreeVideo(freeVideo) {
+    // Extract information from the free video object
+    const {
+        id,
+        media,
+        title,
+        subtitle,
+        thumbnail,
+        manifest,
+        rating_percentage,
+        year_produced,
+        category,
+        duration
+    } = freeVideo;
+
+    // Parse the duration string (e.g., "50m" to seconds)
+    const durationSeconds = parseDuration(duration);
+
+    // Create a category-based author
+    const categoryObj = getCategoryByLabel(category);
+    const author = categoryObj
+        ? createChannelLinkFromCategory(categoryObj)
+        : createCategoryAuthorLink(category.toLowerCase(), category);
+
+    // Create sources from manifest
+    const sources = [];
+
+    if (manifest && manifest.m3u8) {
+        sources.push(new HLSSource({
+            name: "HLS",
+            url: manifest.m3u8,
+            duration: durationSeconds,
+            priority: true
+        }));
+    } else if (manifest && manifest.mpd) {
+        // DASH is not supported on desktop yet
+        sources.push(new DashSource({
+            name: "DASH",
+            url: manifest.mpd,
+            duration: durationSeconds
+        }));
+    }
+
+    // Create video details
+    return new PlatformVideoDetails({
+        id: new PlatformID(PLATFORM, media.toString(), config.id),
+        name: subtitle ? `${title}: ${subtitle}` : title,
+        author,
+        thumbnails: new Thumbnails([new Thumbnail(thumbnail, 0)]),
+        description: `${subtitle || ''}\n\nCategory: ${category}\nYear: ${year_produced}\n\nFree video from Curiosity Stream`,
+        duration: durationSeconds,
+        url: `${URLS.BASE}/video/${media}`,
+        shareUrl: `${BASE_URLS.MAIN}/free/title/${id}`,
+        isLive: false,
+        video: sources.length > 0 ? new VideoSourceDescriptor(sources) : null,
+        rating: new RatingLikesDislikes(
+            Math.round((rating_percentage || 0) * 100), // Likes (approximation)
+            Math.round(100 - (rating_percentage || 0)) // Dislikes (approximation)
+        ),
+        viewCount: -1, // We don't have view count
+        // datetime: year_produced ? new Date(`${year_produced}-01-01`).getTime() / 1000 : 0
+    });
+}
+
+/**
  * Get a category channel by slug
  * @param {string} categorySlug - Category slug
  * @param {string} url - Full channel URL
@@ -590,7 +824,7 @@ function getCategoryChannel(categorySlug, url) {
     if (!category) {
         category = {
             id: new PlatformID(PLATFORM, '', config.id),
-            name: '',
+            name: categorySlug,
             thumbnail: '',
             banner: '',
             subscribers: 0,
@@ -956,7 +1190,7 @@ function formatCategoryName(categorySlug) {
  */
 function constructMediaUrl(media) {
     // Use obj_type to construct the most appropriate URL
-    const objType = media.obj_type || 'media';
+    const objType = media.obj_type || CONTENT_TYPES.MEDIA;
     return `${URLS.BASE}/${objType}/${media.title_id || media.id}`;
 }
 
@@ -966,7 +1200,7 @@ function constructMediaUrl(media) {
  * @returns {string} Collection URL
  */
 function constructCollectionUrl(collection) {
-    return `${URLS.BASE}/series/${collection.id}`;
+    return URLS.SERIES_PAGE(collection.id);
 }
 
 /**
@@ -1197,6 +1431,66 @@ function fetchSearchData(query, page = 1) {
     }
 }
 
+/**
+ * Extracts a script URL that starts with "/_next/static/chunks/pages/free/title" from HTML
+ * @param {string} html - The HTML content to search
+ * @returns {string|null} - The extracted script URL or null if not found
+ */
+function extractScriptUrl(html) {
+    try {
+        const match = REGEX.SCRIPT_URL.exec(html);
+        return match ? match[1] : null;
+    } catch (error) {
+        log("Error extracting script URL:", error);
+        return null;
+    }
+}
+
+/**
+ * Parses JavaScript object notation that's not valid JSON
+ * 
+ * @param {string} jsObjectString - The JavaScript object string to parse
+ * @returns {object|array} - The parsed JavaScript object or array
+ */
+function parseJsObject(jsObjectString) {
+    try {
+        // First attempt: try direct JSON.parse (in case it's already valid JSON)
+        try {
+            return JSON.parse(jsObjectString);
+        } catch (e) {
+            // Not valid JSON, continue with conversion
+        }
+
+        return Function('return ' + jsObjectString)();
+    } catch (error) {
+        throw new ScriptException("Could not parse the JavaScript object string");
+    }
+}
+
+/**
+ * Gets content ID from URL
+ * @param {string} url - Content URL
+ * @returns {string|null} Content ID if found
+ */
+function getContentIdFromUrl(url) {
+    const match = url.match(REGEX.CONTENT_URL);
+    return match?.[1] ?? null;
+}
+
+/**
+ * Combines regular content with free videos
+ * @param {Array} regularContent - Regular content
+ * @param {boolean} hasSubscription - Has subscription flag
+ * @returns {Array} Combined content
+ */
+function getCombinedContent(regularContent, hasSubscription) {
+    if (hasSubscription) return regularContent;
+
+    const freeVideos = getFreeVideos();
+    const freeVideoPlatformVideos = freeVideos.map(createVideoFromFreeVideo);
+    return [...freeVideoPlatformVideos, ...regularContent];
+}
+
 // ====================== PAGER CLASSES ======================
 
 /**
@@ -1286,5 +1580,5 @@ class RecommendationsPager extends VideoPager {
     }
 }
 
-// Log that the plugin has loaded successfully
+
 log('LOADED');
