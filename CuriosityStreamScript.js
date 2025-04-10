@@ -185,7 +185,7 @@ source.getContentDetails = function (url) {
     }
     
     // If the media is part of a collection, fetch collection details
-    const media = detailsResponse.media;
+    const media = details.media;
     let collection = null;
     
     if (media.collection_id) {
