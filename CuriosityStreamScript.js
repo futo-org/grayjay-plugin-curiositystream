@@ -12,9 +12,40 @@ const PLATFORM = 'CuriosityStream';
 // Base URLs
 const BASE_URLS = {
     MAIN: 'https://curiositystream.com',
-    API_V1: 'https://api.curiositystream.com/v1',
-    API_V2: 'https://api.curiositystream.com/v2',
+    API: 'https://api.curiositystream.com',
     CDN: 'https://cdn.curiositystream.com'
+};
+
+BASE_URLS.API_V1 = `${BASE_URLS.API}/v1`;
+BASE_URLS.API_V2 = `${BASE_URLS.API}/v2`;
+
+// Then define URLS using BASE_URLS
+const URLS = {
+    // Base URLs
+    BASE: BASE_URLS.MAIN,
+    API_V1: BASE_URLS.API_V1,
+    API_V2: BASE_URLS.API_V2,
+    CDN: BASE_URLS.CDN,
+    // Static resources
+    MISSING_IMG: `${BASE_URLS.CDN}/missing.png`,
+
+    // API endpoints
+    MEDIA: (id) => `${BASE_URLS.API_V1}/media/${id}`,
+    MEDIA_HLS: (id) => `${BASE_URLS.API_V1}/media/${id}?encodingsNew=true&encodingsFormat=m3u8`,
+    MEDIA_DASH: (id) => `${BASE_URLS.API_V1}/media/${id}?encodingsNew=true&encodingsFormat=mpd`,
+    COLLECTION: (id) => `${BASE_URLS.API_V1}/series/${id}`,
+    SEARCH_V2: `${BASE_URLS.API_V2}/search`,
+    SEARCH: `${BASE_URLS.API}/search`,
+    FREE_PAGE: `${BASE_URLS.MAIN}/free`,
+
+    // Content URLs
+    MEDIA_PAGE: (id) => `${BASE_URLS.MAIN}/${CONTENT_TYPES.MEDIA}/${id}`,
+    SERIES_PAGE: (id) => `${BASE_URLS.MAIN}/${CONTENT_TYPES.SERIES}/${id}`,
+    CATEGORY_PAGE: (slug) => `${BASE_URLS.MAIN}/categories/${slug}`,
+
+    // API query endpoints
+    MEDIA_QUERY: `${BASE_URLS.API_V1}/media`,
+    COLLECTIONS_QUERY: `${BASE_URLS.API_V1}/collections`
 };
 
 // Regular expressions for URL matching
@@ -43,34 +74,6 @@ const CONTENT_TYPES = {
     SERIES: 'series',
     COLLECTION: 'collection',
     CATEGORY: 'category'
-};
-
-// Then define URLS using BASE_URLS
-const URLS = {
-    // Base URLs
-    BASE: BASE_URLS.MAIN,
-    API_V1: BASE_URLS.API_V1,
-    API_V2: BASE_URLS.API_V2,
-    CDN: BASE_URLS.CDN,
-    // Static resources
-    MISSING_IMG: `${BASE_URLS.CDN}/missing.png`,
-
-    // API endpoints
-    MEDIA: (id) => `${BASE_URLS.API_V1}/media/${id}`,
-    MEDIA_HLS: (id) => `${BASE_URLS.API_V1}/media/${id}?encodingsNew=true&encodingsFormat=m3u8`,
-    MEDIA_DASH: (id) => `${BASE_URLS.API_V1}/media/${id}?encodingsNew=true&encodingsFormat=mpd`,
-    COLLECTION: (id) => `${BASE_URLS.API_V1}/series/${id}`,
-    SEARCH: `${BASE_URLS.API_V2}/search`,
-    FREE_PAGE: `${BASE_URLS.MAIN}/free`,
-
-    // Content URLs
-    MEDIA_PAGE: (id) => `${BASE_URLS.MAIN}/${CONTENT_TYPES.MEDIA}/${id}`,
-    SERIES_PAGE: (id) => `${BASE_URLS.MAIN}/${CONTENT_TYPES.SERIES}/${id}`,
-    CATEGORY_PAGE: (slug) => `${BASE_URLS.MAIN}/categories/${slug}`,
-
-    // API query endpoints
-    MEDIA_QUERY: `${BASE_URLS.API_V1}/media`,
-    COLLECTIONS_QUERY: `${BASE_URLS.API_V1}/collections`
 };
 
 // Default HTTP headers
@@ -354,7 +357,7 @@ source.searchChannels = function(query) {
             "Content-Type": "application/json"
         };
 
-        const res = http.POST(URLS.SEARCH, JSON.stringify(searchBody), headers);
+        const res = http.POST(URLS.SEARCH_V2, JSON.stringify(searchBody), headers);
 
         if (res.isOk) {
             const body = JSON.parse(res.body);
@@ -458,7 +461,6 @@ function loadInitialState() {
             const body = JSON.parse(res.body);
             state.has_subscription = body.data.is_active && !body.data.is_free;
         }
-        bridge.toast(`state.has_subscription: ${state.has_subscription}`);
     }
     
     // Load categories
@@ -1374,7 +1376,7 @@ function fetchSearchData(query, page = 1) {
     };
     
     try {
-        const res = http.POST(`https://api.curiositystream.com/search`, JSON.stringify(searchBody), headers);
+        const res = http.POST(URLS.SEARCH, JSON.stringify(searchBody), headers);
         
         if (!res.isOk) {
             return {
