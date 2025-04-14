@@ -7,7 +7,7 @@
   "sourceUrl": "https://plugins.grayjay.app/CuriosityStream/CuriosityStreamConfig.json",
   "repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/curiositystream",
   "scriptUrl": "./CuriosityStreamScript.js",
-  "version": 2,
+  "version": 3,
   "iconUrl": "./CuriosityStreamIcon.png",
   "id": "273b6523-5438-44e2-9f5d-78e0325a8fd9",
   "scriptSignature": "",
@@ -23,8 +23,8 @@
     "www.curiositystream.com"
   ],
   "authentication": {
-    "loginUrl": "https://curiositystream.com/login?redirect=%2F",
-    "completionUrl": "https://api.curiositystream.com/v1/user",
+    "loginUrl": "https://curiositystream.com/login?redirect=/",
+    "completionUrl": "https://api.curiositystream.com/v1/media?*",
     "domainHeadersToFind": {
       "api.curiositystream.com": [
         "x-auth-token"

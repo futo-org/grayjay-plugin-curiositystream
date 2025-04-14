@@ -22,11 +22,9 @@ touch $DOCUMENT_ROOT/maintenance.file
 # Swap over the content
 echo "Deploying content..."
 mkdir -p "$DEPLOY_DIR"
-mkdir -p "$DEPLOY_DIR/media"  # Create media directory if it doesn't exist
 cp CuriosityStreamIcon.png "$DEPLOY_DIR"
 cp CuriosityStreamConfig.json "$DEPLOY_DIR"
 cp CuriosityStreamScript.js "$DEPLOY_DIR"
-cp media/speaker.png "$DEPLOY_DIR/media/"  # Copy the speaker.png file to media folder
 # Update the sourceUrl in CuriosityStreamConfig.json
 echo "Updating sourceUrl in CuriosityStreamConfig.json..."
 jq --arg sourceUrl "$SOURCE_URL" '.sourceUrl = $sourceUrl' "$DEPLOY_DIR/CuriosityStreamConfig.json" > "$DEPLOY_DIR/CuriosityStreamConfig_temp.json"
@@ -44,7 +42,7 @@ echo "Purging Cloudflare cache for zone $CLOUDFLARE_ZONE_ID..."
 curl -X POST "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/purge_cache" \
      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
      -H "Content-Type: application/json" \
-     --data '{"files":["'"$PLUGIN_URL_ROOT/CuriosityStreamIcon.png"'", "'"$PLUGIN_URL_ROOT/CuriosityStreamConfig.json"'", "'"$PLUGIN_URL_ROOT/CuriosityStreamScript.js"'", "'"$PLUGIN_URL_ROOT/media/speaker.png"'"]}'
+     --data '{"files":["'"$PLUGIN_URL_ROOT/CuriosityStreamIcon.png"'", "'"$PLUGIN_URL_ROOT/CuriosityStreamConfig.json"'", "'"$PLUGIN_URL_ROOT/CuriosityStreamScript.js"'"]}'
 
 # Take site back online
 echo "Bringing site back online..."
