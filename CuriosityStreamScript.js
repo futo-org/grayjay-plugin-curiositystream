@@ -281,8 +281,9 @@ source.getChannelContents = function(url) {
         }
         
         // For collections, we already have all the videos in the collection object
+        // Sort in reverse order to show recent episodes first
         const videos = collection.media
-            .sort((a, b) => a.collection_order - b.collection_order)
+            .sort((a, b) => b.collection_order - a.collection_order)
             .map(media => createVideoFromMedia(media, collection));
         
         // Return a content pager with all videos (no paging needed for collections)
