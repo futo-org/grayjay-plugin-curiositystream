@@ -37,6 +37,7 @@ const URLS = {
     SEARCH_V2: `${BASE_URLS.API_V2}/search`,
     SEARCH: `${BASE_URLS.API}/search`,
     FREE_PAGE: `${BASE_URLS.MAIN}/free`,
+    PLAYBACK_PROGRESS: `${BASE_URLS.API_V1}/user_media`,
 
     // Content URLs
     MEDIA_PAGE: (id) => `${BASE_URLS.MAIN}/${CONTENT_TYPES.MEDIA}/${id}`,
@@ -65,7 +66,9 @@ const REGEX = {
 
 // API settings
 const API = {
-    VIDEOS_PER_PAGE: 10
+    VIDEOS_PER_PAGE: 10,
+    PROGRESS_REPORT_INTERVAL: 15, // Report progress every 15 seconds
+    MIN_TRACKING_DURATION: 5 // Minimum playback duration to track (5 seconds)
 };
 
 // Content types
@@ -444,6 +447,29 @@ source.getPlaylist = function(url) {
  */
 source.getComments = function(url) {
     return new CommentPager([], false);
+};
+
+/**
+ * Get playback tracker for tracking video progress
+ * @param {string} url - Content URL
+ * @returns {PlaybackTracker|null} Playback tracker if available
+ */
+source.getPlaybackTracker = function(url) {
+    // Only track playback if user is logged in and setting is enabled
+    if (!bridge.isLoggedIn() || !settings.curiositystreamActivity) {
+        return null;
+    }
+    
+    try {
+        const contentId = getContentIdFromUrl(url);
+        if (contentId) {
+            return new CuriosityStreamPlaybackTracker(contentId, API.PROGRESS_REPORT_INTERVAL);
+        }
+    } catch (error) {
+        log(`Error creating playback tracker: ${error.message}`);
+    }
+    
+    return null;
 };
 
 // ====================== CORE FUNCTIONALITY ======================
@@ -1583,5 +1609,113 @@ class RecommendationsPager extends VideoPager {
     }
 }
 
+// ====================== PLAYBACK TRACKING ======================
+
+/**
+ * Custom playback tracker for Curiosity Stream
+ */
+class CuriosityStreamPlaybackTracker extends PlaybackTracker {
+    /**
+     * Constructor for playback tracker
+     * @param {string} contentId - Content ID
+     * @param {number} interval - Report interval in seconds
+     */
+    constructor(contentId, interval = 15) {
+        super(interval * 1000); // Convert to milliseconds
+        this.contentId = contentId;
+        this.lastReportedPosition = 0;
+        this.duration = 0;
+        this.isStarted = false;
+    }
+    
+    /**
+     * Called when playback starts
+     * @param {number} position - Start position in seconds
+     */
+    onInit(position) {
+        this.isStarted = true;
+        
+        // Fetch media details to get duration if needed
+        try {
+            if (!this.duration) {
+                const details = fetchMediaDetails(this.contentId, true);
+                if (details && details.media) {
+                    this.duration = details.media.duration || 0;
+                }
+            }
+        } catch (error) {
+            log(`Error fetching media details for tracker: ${error.message}`);
+        }
+        
+        // Report initial position
+        this.reportProgress(position);
+    }
+    
+    /**
+     * Called periodically during playback
+     * @param {number} position - Current position in seconds
+     * @param {boolean} isPlaying - Whether playback is active
+     */
+    onProgress(position, isPlaying) {
+        if (!isPlaying || !this.isStarted) {
+            return;
+        }
+        
+        // Only report if position has changed significantly
+        if (Math.abs(position - this.lastReportedPosition) >= API.MIN_TRACKING_DURATION) {
+            this.reportProgress(position);
+        }
+    }
+    
+    /**
+     * Called when playback concludes
+     */
+    onConcluded() {
+        // Report completed viewing
+        this.reportProgress(this.duration);
+    }
+    
+    /**
+     * Reports playback progress to the API
+     * @param {number} position - Current position in seconds
+     * @param {boolean} completed - Whether playback is completed
+     */
+    reportProgress(position) {
+        try {
+            if (!bridge.isLoggedIn()) {
+                return;
+            }
+            
+            // Ensure position is within valid range
+            position = Math.max(0, position);
+            if (this.duration > 0) {
+                position = Math.min(position, this.duration);
+            }
+            
+            // Prepare data for the progress report
+            const progressData = {
+                media_id: parseInt(this.contentId),
+                progress_in_seconds: position
+            };
+            
+            // Send progress to API
+            const res = http.POST(
+                URLS.PLAYBACK_PROGRESS,
+                JSON.stringify(progressData),
+                DEFAULT_HEADERS,
+                true
+            );
+            
+            if (res.isOk) {
+                this.lastReportedPosition = position;
+                log(`Progress reported for ${this.contentId}: ${position}s`);
+            } else {
+                log(`Failed to report progress: ${res.code}`);
+            }
+        } catch (error) {
+            log(`Error reporting progress: ${error.message}`);
+        }
+    }
+}
 
 log('LOADED');

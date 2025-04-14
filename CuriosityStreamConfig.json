@@ -7,7 +7,7 @@
   "sourceUrl": "https://plugins.grayjay.app/CuriosityStream/CuriosityStreamConfig.json",
   "repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/curiositystream",
   "scriptUrl": "./CuriosityStreamScript.js",
-  "version": 5,
+  "version": 6,
   "iconUrl": "./CuriosityStreamIcon.png",
   "id": "273b6523-5438-44e2-9f5d-78e0325a8fd9",
   "scriptSignature": "",
@@ -28,6 +28,15 @@
     ],
     "userAgent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36"
   },
+  "settings": [
+    {
+			"variable": "curiositystreamActivity",
+			"name": "Provide Curiosity Stream Activity",
+			"description": "Share watch activity with Curiosity Stream",
+			"type": "Boolean",
+			"default": "true"
+		}
+  ],
   "changelog": {
     "1": [
       "Initial release of CuriosityStream plugin",
