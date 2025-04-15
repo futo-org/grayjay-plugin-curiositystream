@@ -178,7 +178,11 @@ source.getContentDetails = function (url) {
     if (url.includes('free=true')) {
         const freeVideo = findFreeVideoById(contentId);
         if (freeVideo) {
-            return createVideoDetailsFromFreeVideo(freeVideo);
+            return createPlatformVideoDetails({
+                media: freeVideo,
+                manifest: freeVideo.manifest,
+                isFreeVideo: true
+            });
         }
     }
 
@@ -206,7 +210,11 @@ source.getContentDetails = function (url) {
         }
     }
     
-    return createVideoDetails(media, collection);
+    return createPlatformVideoDetails({
+        media,
+        collection,
+        isFreeVideo: false
+    });
 };
 
 /**
@@ -558,60 +566,164 @@ function fetchMediaDetails(contentId, isLoggedIn) {
 }
 
 /**
- * Creates a video details object from media data
- * @param {Object} media - Media data from API
- * @param {Object} collection - Collection data if media is part of a collection
- * @returns {PlatformVideoDetails} Video details
+ * Creates a PlatformVideoDetails object with consistent handling for both regular and free videos
+ * 
+ * @param {Object} options - Options for creating the video details
+ * @param {Object} options.media - Media data (API or free video format)
+ * @param {boolean} options.isFreeVideo - Whether this is a free video
+ * @param {Object} options.manifest - Manifest data for free videos
+ * @param {Object} options.collection - Collection data if part of a collection
+ * @returns {PlatformVideoDetails} Video details object
  */
-function createVideoDetails(media, collection) {
-    // Prepare video sources
-    const sources = createVideoSources(media);
+function createPlatformVideoDetails(options) {
+    const { 
+        media, 
+        isFreeVideo = false,
+        manifest = null,
+        collection = null 
+    } = options;
     
-    // Check if content is preview and user doesn't have subscription
-    const is_preview = isMediaPreview(media) && !state.has_subscription;
-    let duration = media.duration || 0;
-    
-    // Format title and description
-    let name = formatMediaTitle(media);
-    let description = formatMediaDescription(media, is_preview, collection);
-    
-    // Handle preview content
-    if (is_preview) {
-        name += ' (preview)';
-        duration = 300; // Preview videos are limited to 5 minutes (300 seconds)
+    if (!media) {
+        throw new ScriptException("Media object is required");
+    }
+
+    function getDuration() {
+        const rawDuration = isFreeVideo ? parseDuration(media.duration) : (media.duration || 0);
+        const isPreview = !isFreeVideo && isMediaPreview(media) && !state.has_subscription;
+        // 5 minutes (300 seconds) is the standard preview length for Curiosity Stream videos
+        return isPreview ? 300 : rawDuration;
     }
     
-    // Determine the appropriate author
+    function getMediaId() {
+        return isFreeVideo ? media.media.toString() : media.id.toString();
+    }
+    
+    // Extract basic properties based on video type
+    const mediaId = getMediaId();
+
+    const title = isFreeVideo 
+        ? (media.subtitle ? `${media.title}: ${media.subtitle}` : media.title) 
+        : formatMediaTitle(media);
+
+    const description = isFreeVideo 
+        ? `${media.subtitle || ''}\n\nCategory: ${media.category}\nYear: ${media.year_produced}\n\nFree video from Curiosity Stream`
+        : formatMediaDescription(media, isMediaPreview(media) && !state.has_subscription, collection);
+    
+    // Create appropriate thumbnails
+    const thumbnails = isFreeVideo 
+        ? new Thumbnails([new Thumbnail(media.thumbnail || '', 0)])
+        : createThumbnails(media);
+    
+    // Determine the video URL
+    const videoUrl = isFreeVideo 
+        ? `${URLS.BASE}/video/${mediaId}?free=true`
+        : constructMediaUrl(media);
+    
+    // Determine share URL
+    const shareUrl = isFreeVideo 
+        ? `${BASE_URLS.MAIN}/free/title/${media.id}`
+        : constructMediaUrl(media);
+    
+    // Set up author/channel link
     let author;
-    if (collection) {
-        // Use collection as the author for videos part of a series
+    if (isFreeVideo) {
+        // For free videos, use category
+        const categoryObj = getCategoryByLabel(media.category);
+        author = categoryObj
+            ? createChannelLinkFromCategory(categoryObj)
+            : createCategoryAuthorLink(media.category.toLowerCase(), media.category);
+    } else if (collection) {
+        // For collection videos, use collection
         author = createAuthorLinkFromCollection(collection);
     } else {
-        // Use category as the author for standalone videos
+        // For standalone videos, use category
         const category = getCategoryByLabel(media.primary_category);
         author = category ? createChannelLinkFromCategory(category) : createDefaultChannelLink();
     }
     
+    // Create video sources with validation and fallbacks
+    const sources = [];
+    const duration = getDuration();
+    
+    if (isFreeVideo) {
+        // Handle free video sources
+        if (manifest && manifest.m3u8) {     
+            sources.push(new HLSSource({
+                name: "HLS",
+                url: manifest.m3u8,
+                duration: duration,
+                priority: true
+            }));
+        } else if (manifest && manifest.mpd) {
+            // Add DASH as fallback
+            sources.push(new DashSource({
+                name: "DASH",
+                url: manifest.mpd,
+                duration: duration
+            }));
+            log("Warning: Only DASH format available for free video, which may not work on desktop");
+        }
+    } else {
+        // Handle regular video sources
+        if (media.encodings?.length) {
+            for (const encoding of media.encodings) {
+                const url = encoding.master_playlist_url;
+                if (!url) continue;
+                
+                if (REGEX.IS_HLS.test(url)) {
+                    sources.push(new HLSSource({
+                        name: "HLS",
+                        url: url,
+                        duration: duration,
+                        priority: true
+                    }));
+                } else if (REGEX.IS_DASH.test(url)) {
+                    sources.push(new DashSource({
+                        name: "DASH",
+                        url: url,
+                        duration: duration
+                    }));
+                }
+            }
+        }
+    }
+    
+    // If we couldn't get any sources, log the issue
+    if (sources.length === 0) {
+        throw new UnavailableException(`No playable sources found for ${isFreeVideo ? 'free ' : ''}video ${mediaId}`);
+    }
+    
+    const rating = isFreeVideo 
+        ? new RatingLikesDislikes(
+            Math.round((media.rating_percentage || 0) * 100),
+            Math.round(100 - (media.rating_percentage || 0) * 100)
+        ) 
+        : createMediaRating(media);
+    
+    const viewCount = isFreeVideo ? -1 : (media.num_views || media.view_count || -1);
+    
+    // Create and return the PlatformVideoDetails object
     const videoDetails = new PlatformVideoDetails({
-        id: new PlatformID(PLATFORM, media.id.toString(), config.id),
-        name: name,
-        author,
-        thumbnails: createThumbnails(media),
-        description,
+        id: new PlatformID(PLATFORM, mediaId, config.id),
+        name: title,
+        author: author,
+        thumbnails: thumbnails,
+        description: description,
         duration: duration,
-        url: constructMediaUrl(media),
-        shareUrl: constructMediaUrl(media),
+        url: videoUrl,
+        shareUrl: shareUrl,
         isLive: false,
         video: sources.length > 0 ? new VideoSourceDescriptor(sources) : null,
-        rating: createMediaRating(media),
-        viewCount: media.num_views || media.view_count || -1,
-        datetime: 0 // Without metadata request, we don't have this
+        rating: rating,
+        viewCount: viewCount,
+        datetime: 0 // Without additional metadata request, we don't have this
     });
     
-    // Add method to get recommendations
-    videoDetails.getContentRecommendations = function() {
-        return getRecommendations(media.id);
-    };
+    if(!isFreeVideo) {
+        videoDetails.getContentRecommendations = function() {
+            return getRecommendations(mediaId);
+        };
+    }
     
     return videoDetails;
 }
@@ -698,28 +810,56 @@ function getFreeVideos() {
  * @returns {string|null} Script URL if found
  */
 function getFreePageScriptUrl() {
-    const res = http.GET(URLS.FREE_PAGE, DEFAULT_HEADERS);
-    if (!res.isOk) {
-        log("Failed to fetch free page");
+    try {
+        const res = http.GET(URLS.FREE_PAGE, DEFAULT_HEADERS);
+        if (!res.isOk) {
+            log(`Failed to fetch free page: HTTP ${res.code}`);
+            return null;
+        }
+        
+        const scriptUrl = extractScriptUrl(res.body);
+        if (!scriptUrl) {
+            log("Script URL pattern not found in page content");
+        }
+        return scriptUrl;
+    } catch (error) {
+        log(`Error in getFreePageScriptUrl: ${error.message}`);
         return null;
     }
-    return extractScriptUrl(res.body);
 }
-
 /**
  * Extracts free videos data from script content
  * @param {string} scriptUrl - URL of the script file
  * @returns {Array} Array of free video objects
  */
 function extractFreeVideosFromScript(scriptUrl) {
-    const scriptRes = http.GET(`${BASE_URLS.MAIN}${scriptUrl}`, DEFAULT_HEADERS);
-    if (!scriptRes.isOk) return [];
-    const match = scriptRes.body.match(REGEX.FREE_VIDEOS_DATA);
-    if (!match?.[1]) return [];
-    const freeVideos = parseJsObject(match[1]);
-    return Array.isArray(freeVideos) ? freeVideos : [];
+    try {
+        const scriptRes = http.GET(`${BASE_URLS.MAIN}${scriptUrl}`, DEFAULT_HEADERS);
+        
+        if (!scriptRes.isOk) {
+            log(`Failed to fetch script: HTTP ${scriptRes.code}`);
+            return [];
+        }
+        
+        const match = scriptRes.body.match(REGEX.FREE_VIDEOS_DATA);
+        if (!match || !match[1]) {
+            log("Free videos data pattern not found in script content");
+            return [];
+        }
+        
+        // Try to parse the content
+        try {
+            const freeVideos = parseJsObject(match[1]);
+            return Array.isArray(freeVideos) ? freeVideos : [];
+        } catch (parseError) {
+            log(`Error parsing free videos data: ${parseError.message}`);
+            return [];
+        }
+    } catch (error) {
+        log(`Error in extractFreeVideosFromScript: ${error.message}`);
+        return [];
+    }
 }
-
 /**
  * Finds a free video by its media ID
  * @param {string} mediaId - Media ID to search for
@@ -768,75 +908,6 @@ function createVideoFromFreeVideo(freeVideo) {
         url: `${URLS.BASE}/video/${media}?free=true`,
         isLive: false,
         description: subtitle || title
-    });
-}
-
-/**
- * Creates a video details object from a free video
- * @param {Object} freeVideo - Free video data
- * @returns {PlatformVideoDetails} Video details
- */
-function createVideoDetailsFromFreeVideo(freeVideo) {
-    // Extract information from the free video object
-    const {
-        id,
-        media,
-        title,
-        subtitle,
-        thumbnail,
-        manifest,
-        rating_percentage,
-        year_produced,
-        category,
-        duration
-    } = freeVideo;
-
-    // Parse the duration string (e.g., "50m" to seconds)
-    const durationSeconds = parseDuration(duration);
-
-    // Create a category-based author
-    const categoryObj = getCategoryByLabel(category);
-    const author = categoryObj
-        ? createChannelLinkFromCategory(categoryObj)
-        : createCategoryAuthorLink(category.toLowerCase(), category);
-
-    // Create sources from manifest
-    const sources = [];
-
-    if (manifest && manifest.m3u8) {
-        sources.push(new HLSSource({
-            name: "HLS",
-            url: manifest.m3u8,
-            duration: durationSeconds,
-            priority: true
-        }));
-    } else if (manifest && manifest.mpd) {
-        // DASH is not supported on desktop yet
-        sources.push(new DashSource({
-            name: "DASH",
-            url: manifest.mpd,
-            duration: durationSeconds
-        }));
-    }
-
-    // Create video details
-    return new PlatformVideoDetails({
-        id: new PlatformID(PLATFORM, media.toString(), config.id),
-        name: subtitle ? `${title}: ${subtitle}` : title,
-        author,
-        thumbnails: new Thumbnails([new Thumbnail(thumbnail, 0)]),
-        description: `${subtitle || ''}\n\nCategory: ${category}\nYear: ${year_produced}\n\nFree video from Curiosity Stream`,
-        duration: durationSeconds,
-        url: `${URLS.BASE}/video/${media}`,
-        shareUrl: `${BASE_URLS.MAIN}/free/title/${id}`,
-        isLive: false,
-        video: sources.length > 0 ? new VideoSourceDescriptor(sources) : null,
-        rating: new RatingLikesDislikes(
-            Math.round((rating_percentage || 0) * 100), // Likes (approximation)
-            Math.round(100 - (rating_percentage || 0)) // Dislikes (approximation)
-        ),
-        viewCount: -1, // We don't have view count
-        // datetime: year_produced ? new Date(`${year_produced}-01-01`).getTime() / 1000 : 0
     });
 }
 
@@ -1461,7 +1532,7 @@ function fetchSearchData(query, page = 1) {
 }
 
 /**
- * Extracts a script URL that starts with "/_next/static/chunks/pages/free/title" from HTML
+ * Extracts a script URL from HTML
  * @param {string} html - The HTML content to search
  * @returns {string|null} - The extracted script URL or null if not found
  */
@@ -1489,8 +1560,14 @@ function parseJsObject(jsObjectString) {
         } catch (e) {
             // Not valid JSON, continue with conversion
         }
-
-        return Function('return ' + jsObjectString)();
+        
+        // Try to sanitize the JavaScript object string
+        const sanitized = jsObjectString
+            .replace(/undefined/g, 'null')
+            .replace(/\bfunction\s*\([^)]*\)\s*{[^}]*}/g, 'null');
+            
+        // Use Function to parse the JavaScript object string
+        return Function('return ' + sanitized)();
     } catch (error) {
         throw new ScriptException("Could not parse the JavaScript object string");
     }
