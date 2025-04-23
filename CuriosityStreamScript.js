@@ -480,6 +480,38 @@ source.getPlaybackTracker = function(url) {
     return null;
 };
 
+
+/**
+ * Gets playlists for a channel (currently only for series)
+ * @param {string} url - Channel URL
+ * @returns {PlaylistPager} Paged results for channel playlists
+ */
+source.getChannelPlaylists = function(url) {
+
+    const seriesMatch = url.match(REGEX.SERIES_URL);
+    if (seriesMatch) {
+        const seriesId = seriesMatch[1];
+        const collection = fetchCollectionDetails(seriesId);
+        
+        if (!collection) {
+            return new PlaylistPager([], false);
+        }
+        
+        const playlist = createPlaylistFromCollection(collection);
+        
+        if (collection.media && Array.isArray(collection.media)) {
+            collection.media = collection.media.sort((a, b) => b.collection_order - a.collection_order);
+            state.collections[seriesId] = collection;
+        }
+        
+        // Return a playlist pager with just this series
+        return new PlaylistPager([playlist], false);
+    }
+    
+    // For categories or other channel types, return empty pager
+    return new PlaylistPager([], false);
+};
+
 // ====================== CORE FUNCTIONALITY ======================
 
 /**
