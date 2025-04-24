@@ -264,12 +264,11 @@ source.getChannelContents = function(url) {
             url: `${URLS.API_V1}/media?filterBy=category&term=${categorySlug}&collections=true&limit=${API.VIDEOS_PER_PAGE}&sort=creation_date_desc`,
             processingInfo: { 
                 categorySlug, 
-                categoryName: formatCategoryName(categorySlug) 
+                categoryName: category.label 
             }
         });
         
         return new CategoryContentPager(
-            categorySlug,
             result.items,
             result.hasMore,
             { page: 1, category }
@@ -1314,17 +1313,6 @@ function isMediaPreview(media) {
 }
 
 /**
- * Formats a category name from slug
- * @param {string} categorySlug - Category slug
- * @returns {string} Formatted category name
- */
-function formatCategoryName(categorySlug) {
-    return categorySlug.split('-').map(word =>
-        word.charAt(0).toUpperCase() + word.slice(1)
-    ).join(' ').replace(/-/g, ' ');
-}
-
-/**
  * Constructs a media URL
  * @param {Object} media - Media data
  * @returns {string} Media URL
@@ -1663,19 +1651,20 @@ class CuriosityStreamHomePager extends VideoPager {
  * Custom pager for category content
  */
 class CategoryContentPager extends VideoPager {
-    constructor(categorySlug, initialResults, hasMore, context) {
-        super(initialResults, hasMore, { ...context, categorySlug });
+    constructor(initialResults, hasMore, context) {
+        super(initialResults, hasMore, context);
     }
     
     nextPage() {
-        const categorySlug = this.context.categorySlug;
+        const categorySlug = this.context.category.name;
+        const categoryName = this.context.category.label;
         
         const result = fetchContentDataWithCollections({
             url: `${URLS.API_V1}/media?filterBy=category&term=${categorySlug}&collections=true&limit=${API.VIDEOS_PER_PAGE}&sort=creation_date_desc`,
             page: this.context.page + 1,
             processingInfo: {
                 categorySlug,
-                categoryName: formatCategoryName(categorySlug)
+                categoryName: categoryName
             }
         });
         
