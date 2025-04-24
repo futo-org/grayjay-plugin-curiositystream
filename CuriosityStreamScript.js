@@ -29,6 +29,9 @@ const URLS = {
     // Static resources
     MISSING_IMG: `${BASE_URLS.CDN}/missing.png`,
 
+    // Web URLs
+    WEB_VIDEO: (id) => `${BASE_URLS.MAIN}/video/${id}`,
+
     // API endpoints
     MEDIA: (id) => `${BASE_URLS.API_V1}/media/${id}`,
     MEDIA_HLS: (id) => `${BASE_URLS.API_V1}/media/${id}?encodingsNew=true&encodingsFormat=m3u8`,
@@ -40,13 +43,13 @@ const URLS = {
     PLAYBACK_PROGRESS: `${BASE_URLS.API_V1}/user_media`,
 
     // Content URLs
-    MEDIA_PAGE: (id) => `${BASE_URLS.MAIN}/${CONTENT_TYPES.MEDIA}/${id}`,
-    SERIES_PAGE: (id) => `${BASE_URLS.MAIN}/${CONTENT_TYPES.SERIES}/${id}`,
+    SERIES_PAGE: (id) => `${BASE_URLS.MAIN}/series/${id}`,
     CATEGORY_PAGE: (slug) => `${BASE_URLS.MAIN}/categories/${slug}`,
 
     // API query endpoints
     MEDIA_QUERY: `${BASE_URLS.API_V1}/media`,
-    COLLECTIONS_QUERY: `${BASE_URLS.API_V1}/collections`
+    COLLECTIONS_QUERY: `${BASE_URLS.API_V1}/collections`,
+    PLUGIN_ICON: 'https://plugins.grayjay.app/CuriosityStream/CuriosityStreamIcon.png'
 };
 
 // Regular expressions for URL matching
@@ -69,14 +72,6 @@ const API = {
     VIDEOS_PER_PAGE: 10,
     PROGRESS_REPORT_INTERVAL: 15, // Report progress every 15 seconds
     MIN_TRACKING_DURATION: 5 // Minimum playback duration to track (5 seconds)
-};
-
-// Content types
-const CONTENT_TYPES = {
-    MEDIA: 'media',
-    SERIES: 'series',
-    COLLECTION: 'collection',
-    CATEGORY: 'category'
 };
 
 // Default HTTP headers
@@ -546,18 +541,32 @@ function loadInitialState() {
 function processCategories(categories) {
     categories.forEach(category => {
         const { background_url, description, image_url, label, name } = category;
-        state.categories[name] = {
+        const parentCategory = {
             background_url: background_url !== URLS.MISSING_IMG ? background_url : '',
             description,
             image_url: image_url !== URLS.MISSING_IMG ? image_url : '',
             label,
             name
         };
+
+        state.categories[name] = parentCategory;
         
         // Process subcategories
         if (category.subcategories) {
             category.subcategories.forEach(subCategory => {
-                const { background_url, description, image_url, label, name } = subCategory;
+                
+                const existingCategoryNames = Object.values(state.categories).map(cat => cat.label);
+
+                let { background_url, description, image_url, label, name } = subCategory;
+
+                if(image_url === URLS.MISSING_IMG || !image_url) {
+                    image_url = URLS.PLUGIN_ICON;
+                }
+
+                if(existingCategoryNames.includes(label)) {
+                    label = `${parentCategory.label} - ${label}`
+                }
+                
                 state.categories[name] = {
                     background_url: background_url !== URLS.MISSING_IMG ? background_url : '',
                     description,
@@ -1114,7 +1123,7 @@ function createChannelFromCategory(category) {
         banner: category.background_url || '',
         subscribers: 0,
         description: `Documentaries in the ${category.label} category`,
-        url: `${URLS.BASE}/categories/${category.name}`
+        url: URLS.CATEGORY_PAGE(category.name)
     });
 }
 
@@ -1144,7 +1153,7 @@ function createChannelLinkFromCategory(category) {
     return new PlatformAuthorLink(
         new PlatformID(PLATFORM, category?.name ?? '', config.id),
         category?.label ?? '',
-        category?.name ? `${URLS.BASE}/categories/${category.name}` : '',
+        category?.name ? URLS.CATEGORY_PAGE(category.name) : '',
         category?.image_url ?? ''
     );
 }
@@ -1321,9 +1330,7 @@ function formatCategoryName(categorySlug) {
  * @returns {string} Media URL
  */
 function constructMediaUrl(media) {
-    // Use obj_type to construct the most appropriate URL
-    const objType = media.obj_type || CONTENT_TYPES.MEDIA;
-    return `${URLS.BASE}/${objType}/${media.title_id || media.id}`;
+    return URLS.WEB_VIDEO(media.title_id || media.id);
 }
 
 /**
@@ -1345,7 +1352,7 @@ function constructCategoryUrl(category) {
     const categorySlug = typeof category === 'string'
         ? category.toLowerCase().replace(/[&\\s]+/g, '-').replace(/[^a-z0-9-]/g, '')
         : '';
-    return `${URLS.BASE}/categories/${encodeURIComponent(categorySlug)}`;
+    return URLS.CATEGORY_PAGE(categorySlug);
 }
 
 /**
