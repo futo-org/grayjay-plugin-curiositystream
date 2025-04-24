@@ -7,7 +7,7 @@
   "sourceUrl": "https://plugins.grayjay.app/CuriosityStream/CuriosityStreamConfig.json",
   "repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/curiositystream",
   "scriptUrl": "./CuriosityStreamScript.js",
-  "version": 9,
+  "version": 10,
   "iconUrl": "./CuriosityStreamIcon.png",
   "id": "273b6523-5438-44e2-9f5d-78e0325a8fd9",
   "scriptSignature": "",
