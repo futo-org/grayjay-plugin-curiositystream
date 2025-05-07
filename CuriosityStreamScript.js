@@ -627,9 +627,10 @@ function createPlatformVideoDetails(options) {
         throw new ScriptException("Media object is required");
     }
 
+    const isPreview = !isFreeVideo && isMediaPreview(media) && !state.has_subscription;
+
     function getDuration() {
         const rawDuration = isFreeVideo ? parseDuration(media.duration) : (media.duration || 0);
-        const isPreview = !isFreeVideo && isMediaPreview(media) && !state.has_subscription;
         // 5 minutes (300 seconds) is the standard preview length for Curiosity Stream videos
         return isPreview ? 300 : rawDuration;
     }
@@ -641,9 +642,13 @@ function createPlatformVideoDetails(options) {
     // Extract basic properties based on video type
     const mediaId = getMediaId();
 
-    const title = isFreeVideo 
+    let title = isFreeVideo 
         ? (media.subtitle ? `${media.title}: ${media.subtitle}` : media.title) 
         : formatMediaTitle(media);
+
+    if(isPreview) {
+        title += ' (preview)';
+    }
 
     const description = isFreeVideo 
         ? `${media.subtitle || ''}\n\nCategory: ${media.category}\nYear: ${media.year_produced}\n\nFree video from Curiosity Stream`
