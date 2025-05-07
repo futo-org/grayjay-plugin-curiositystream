@@ -734,10 +734,7 @@ function createPlatformVideoDetails(options) {
     }
     
     const rating = isFreeVideo 
-        ? new RatingLikesDislikes(
-            Math.round((media.rating_percentage || 0) * 100),
-            Math.round(100 - (media.rating_percentage || 0) * 100)
-        ) 
+        ? null
         : createMediaRating(media);
     
     const viewCount = isFreeVideo ? -1 : (media.num_views || media.view_count || -1);
