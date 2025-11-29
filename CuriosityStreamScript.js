@@ -13,10 +13,11 @@ const PLATFORM = 'CuriosityStream';
 const BASE_URLS = {
     MAIN: 'https://curiositystream.com',
     API: 'https://api.curiositystream.com',
+    API_USE1: 'https://api-use1.curiositystream.com',
     CDN: 'https://cdn.curiositystream.com'
 };
 
-BASE_URLS.API_V1 = `${BASE_URLS.API}/v1`;
+BASE_URLS.API_V1 = `${BASE_URLS.API_USE1}/v1`;
 BASE_URLS.API_V2 = `${BASE_URLS.API}/v2`;
 
 // Then define URLS using BASE_URLS
@@ -1438,7 +1439,7 @@ function fetchContentDataWithCollections(params) {
     } = params;
     
     const fullUrl = `${url}&page=${page}`;
-    const res = http.GET(fullUrl, DEFAULT_HEADERS);
+    const res = http.GET(fullUrl, DEFAULT_HEADERS, state.has_subscription);
     
     if (!res.isOk) {
         return {
