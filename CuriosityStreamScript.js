@@ -1100,9 +1100,9 @@ function fetchCollectionDetailsBatch(collectionIds) {
  */
 function getRecommendations(videoId) {
     const result = fetchContentDataWithCollections({
-        url: `${URLS.API_V1}/media?filterBy=recommended&term=${videoId}&limit=${API.VIDEOS_PER_PAGE}&collections=true`
+        url: `${URLS.API_V1}/media?filterBy=recommended&term=${videoId}&limit=${API.VIDEOS_PER_PAGE}`
     });
-    
+
     return new RecommendationsPager(
         result.items,
         result.hasMore,
@@ -1254,10 +1254,17 @@ function getCategoryByLabel(label) {
  * @returns {Thumbnails} Thumbnails object
  */
 function createThumbnails(media) {
-    return new Thumbnails([
-        new Thumbnail(media.image_medium, 0),
-        new Thumbnail(media.image_large, 1)
-    ]);
+
+    const thumbnailUrls = [
+        media.image_medium, 
+        media.image_large
+    ].filter(Boolean);
+
+    if(!thumbnailUrls.length) {
+        thumbnailUrls.push(URLS.PLUGIN_ICON);
+    }
+
+    return new Thumbnails(thumbnailUrls.map((url, index) => new Thumbnail(url, index)));
 }
 
 /**

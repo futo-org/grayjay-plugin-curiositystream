@@ -39,7 +39,8 @@
   ],
   "changelog": {
     "13": [
-      "- Fix: Authentication;"
+      "- Fix: Authentication;",
+      "- Fix: Content recommendation;"
     ],
     "2": [
       "Use series as channels;",
