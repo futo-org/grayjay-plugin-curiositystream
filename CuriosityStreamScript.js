@@ -601,6 +601,12 @@ function fetchMediaDetails(contentId, isLoggedIn) {
         JSON.parse(hlsResponse.body) : 
         JSON.parse(dashResponse.body);
     
+    // Also list the DASH encodings, before the HLS ones; HLS keeps priority for playback.
+    if (hlsResponse.isOk && dashResponse.isOk && mainDetails.data) {
+        const dashEncodings = JSON.parse(dashResponse.body).data?.encodings ?? [];
+        mainDetails.data.encodings = dashEncodings.concat(mainDetails.data.encodings ?? []);
+    }
+
     return {
         media: mainDetails.data
     };
